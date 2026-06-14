@@ -1,0 +1,28 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── 虚拟环境 ──
+.venv/
+
+# ── IDE ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── CodeWhale ──
+.codewhale/
+
+# ── 操作系统 ──
+.DS_Store
+Thumbs.db
+
+# ── 运行时数据（用户本地） ──
+# 保留 data/ 目录结构，用户运行后产生的新任务数据不被追踪
