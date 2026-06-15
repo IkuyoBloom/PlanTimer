@@ -1171,58 +1171,18 @@ class TaskDetailDialog(QDialog):
 
 # ==================== 通知弹窗 ====================
 
-class NotificationDialog(QDialog):
-    """任务提前通知弹窗，支持提示音播放"""
+class NotificationSound:
+    """播放通知提示音——优先自定义音效，否则用 Windows 默认通知音"""
 
-    def __init__(self, task: Task, seconds_remaining: int, parent=None):
-        super().__init__(parent)
-        self.task_name = task.name
-        self.setWindowTitle("任务提醒")
-        self.setMinimumWidth(380)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        self.init_ui(seconds_remaining)
-
-        # 播放提示音
+    @staticmethod
+    def play(task: Task):
         if task.notify_sound_enabled and task.notify_sound_path:
-            sound_path = task.notify_sound_path
-            if os.path.exists(sound_path):
-                winsound.PlaySound(sound_path, winsound.SND_ASYNC | winsound.SND_NOWAIT)
-
-    def init_ui(self, seconds_remaining: int):
-        layout = QVBoxLayout()
-        layout.setSpacing(12)
-        layout.setContentsMargins(20, 16, 20, 16)
-
-        title = QLabel("\u23f0 任务即将执行")
-        title.setStyleSheet("color: #e0e0e0; font-size: 16px; font-weight: bold;")
-        layout.addWidget(title)
-
-        name_label = QLabel(self.task_name)
-        name_label.setStyleSheet(
-            "color: #ffffff; font-size: 22px; font-weight: bold; padding: 4px 0;"
-        )
-        layout.addWidget(name_label)
-
-        if seconds_remaining > 0:
-            if seconds_remaining >= 60:
-                time_text = f"将在 {seconds_remaining // 60} 分 {seconds_remaining % 60} 秒后执行"
-            else:
-                time_text = f"将在 {seconds_remaining} 秒后执行"
-        else:
-            time_text = "即将开始执行"
-        time_label = QLabel(time_text)
-        time_label.setStyleSheet("color: #a0a0a0; font-size: 13px;")
-        layout.addWidget(time_label)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        ok_btn = QPushButton("知道了")
-        ok_btn.setFixedWidth(100)
-        ok_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(ok_btn)
-        layout.addLayout(btn_layout)
-
-        self.setLayout(layout)
+            path = task.notify_sound_path
+            if os.path.exists(path):
+                winsound.PlaySound(path, winsound.SND_ASYNC | winsound.SND_NOWAIT)
+                return
+        # 默认 Windows 通知音
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
 
 # ==================== 主窗口 ====================
@@ -1613,10 +1573,24 @@ class MainWindow(QMainWindow):
                 current_seconds = now.hour * 3600 + now.minute * 60 + now.second
                 if notify_seconds >= 0 and notify_seconds <= current_seconds < run_seconds:
                     remaining = run_seconds - current_seconds
-                    dialog = NotificationDialog(task, remaining, self)
-                    dialog.exec()
+                    self._show_task_notification(task, remaining)
                     self._notified_tasks.add(task.id)
                     self.status_label.setText(f"已提醒: {task.name}")
+
+    def _show_task_notification(self, task: Task, remaining: int):
+        """使用 Windows 原生托盘气泡通知 + 提示音"""
+        # 播放提示音（优先自定义，否则默认 Windows 通知音）
+        NotificationSound.play(task)
+
+        # 组装通知文字
+        if remaining <= 0:
+            time_text = "即将开始执行"
+        elif remaining >= 60:
+            time_text = f"{remaining // 60} 分 {remaining % 60} 秒后执行"
+        else:
+            time_text = f"{remaining} 秒后执行"
+
+        self.tray_icon.showMessage("任务提醒", f"「{task.name}」{time_text}", QSystemTrayIcon.MessageIcon.Information, 5000)
 
     def execute_task(self, task):
         """执行任务。有启动参数时用 subprocess，无参数时用 os.startfile。"""
