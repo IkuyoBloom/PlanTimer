@@ -4,6 +4,9 @@ import json
 import subprocess
 import winsound
 
+APP_VERSION = "v1.1.0"
+APP_CHANGELOG = "通知改为 Windows 原生托盘气泡 + 默认系统音效"
+
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QListWidget, QListWidgetItem,
                              QAbstractButton, QPushButton, QLabel,
@@ -288,7 +291,8 @@ def format_relative_time(dt_str: str) -> str:
 class Task:
     def __init__(self, id, name, program_path, run_time, enabled=True, repeat_days=None, args="",
                  last_executed=None, execution_count=0, run_once=False,
-                 notify_before_seconds=0, notify_sound_enabled=False, notify_sound_path=""):
+                 notify_before_seconds=0, notify_sound_enabled=False, notify_sound_path="",
+                 execution_history=None):
         self.id = id
         self.name = name
         self.program_path = program_path
@@ -302,6 +306,7 @@ class Task:
         self.notify_before_seconds = notify_before_seconds
         self.notify_sound_enabled = notify_sound_enabled
         self.notify_sound_path = notify_sound_path
+        self.execution_history = execution_history if execution_history is not None else []
 
     def to_dict(self):
         return {
@@ -317,7 +322,8 @@ class Task:
             'run_once': self.run_once,
             'notify_before_seconds': self.notify_before_seconds,
             'notify_sound_enabled': self.notify_sound_enabled,
-            'notify_sound_path': self.notify_sound_path
+            'notify_sound_path': self.notify_sound_path,
+            'execution_history': self.execution_history
         }
 
     @classmethod
@@ -335,9 +341,9 @@ class Task:
             data.get('run_once', False),
             data.get('notify_before_seconds', 0),
             data.get('notify_sound_enabled', False),
-            data.get('notify_sound_path', '')
+            data.get('notify_sound_path', ''),
+            data.get('execution_history', []),
         )
-
 
 class TaskManager:
     def __init__(self):
@@ -430,7 +436,19 @@ class SettingsDialog(QDialog):
         self.chk_tray.setChecked(self.settings.start_to_tray)
         layout.addWidget(self.chk_tray)
 
-        layout.addSpacing(8)
+        layout.addStretch()
+
+        # ── 版本信息 ──
+        version_label = QLabel(f"版本 {APP_VERSION}")
+        version_label.setStyleSheet("color: #888888; font-size: 11px;")
+        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(version_label)
+
+        changelog_label = QLabel(APP_CHANGELOG)
+        changelog_label.setStyleSheet("color: #666666; font-size: 10px;")
+        changelog_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        changelog_label.setWordWrap(True)
+        layout.addWidget(changelog_label)
 
         btn_layout = QHBoxLayout()
         btn_save = QPushButton("保存")
@@ -1197,6 +1215,7 @@ class MainWindow(QMainWindow):
 
         self.task_manager = TaskManager()
         self._notified_tasks: set[str] = set()
+        self._executed_today: dict[str, str] = {}  # task_id -> "YYYY-MM-DD"
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.check_tasks)
         self.timer.start(1000)
@@ -1562,15 +1581,24 @@ class MainWindow(QMainWindow):
                 continue
             if not task.repeat_days[current_day]:
                 continue
-            if task.run_time == current_time:
+
+            # ── 执行检查（60 秒窗口补偿 QTimer 漂移）──
+            parts = [int(x) for x in task.run_time.split(":")]
+            run_secs = parts[0] * 3600 + parts[1] * 60 + parts[2]
+            current_secs = now.hour * 3600 + now.minute * 60 + now.second
+
+            today_str = now.strftime("%Y-%m-%d")
+            if run_secs <= current_secs < run_secs + 60 and self._executed_today.get(task.id) != today_str:
                 self.execute_task(task)
+                self._executed_today[task.id] = today_str
                 continue
+
             # 提前通知检查
             if task.notify_before_seconds > 0 and task.id not in self._notified_tasks:
                 parts = [int(x) for x in task.run_time.split(":")]
                 run_seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
                 notify_seconds = run_seconds - task.notify_before_seconds
-                current_seconds = now.hour * 3600 + now.minute * 60 + now.second
+                current_seconds = current_secs
                 if notify_seconds >= 0 and notify_seconds <= current_seconds < run_seconds:
                     remaining = run_seconds - current_seconds
                     self._show_task_notification(task, remaining)
@@ -1595,6 +1623,7 @@ class MainWindow(QMainWindow):
     def execute_task(self, task):
         """执行任务。有启动参数时用 subprocess，无参数时用 os.startfile。"""
         self._notified_tasks.discard(task.id)
+        now_iso = datetime.now().isoformat()
         try:
             if task.args:
                 cmd = f'"{task.program_path}" {task.args}'
@@ -1603,9 +1632,16 @@ class MainWindow(QMainWindow):
                                  if sys.platform == 'win32' else 0)
             else:
                 os.startfile(task.program_path)
-            # 记录执行
-            task.last_executed = datetime.now().isoformat()
+            # 记录执行历史
+            task.last_executed = now_iso
             task.execution_count += 1
+            task.execution_history.append({
+                "time": now_iso,
+                "status": "success"
+            })
+            # 保留最近 100 条记录
+            if len(task.execution_history) > 100:
+                task.execution_history = task.execution_history[-100:]
             if task.run_once:
                 self.task_manager.delete_task(task.id)
                 self.update_task_list()
@@ -1615,6 +1651,14 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f"已执行: {task.name}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"执行任务失败: {str(e)}")
+            # 失败也记录
+            task.execution_history.append({
+                "time": now_iso,
+                "status": "failed",
+                "error": str(e)
+            })
+            if len(task.execution_history) > 100:
+                task.execution_history = task.execution_history[-100:]
 
 
 # ==================== 入口 ====================

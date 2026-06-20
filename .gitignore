@@ -20,6 +20,12 @@ build/
 # ── CodeWhale ──
 .codewhale/
 
+# ── 构建产物 ──
+*.exe
+build/
+dist/
+*.spec
+
 # ── 操作系统 ──
 .DS_Store
 Thumbs.db
